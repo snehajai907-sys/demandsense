@@ -67,19 +67,37 @@ SAMPLE_CSV = """date,sales
 
 # ── HELPERS ────────────────────────────────────────────────────
 # FIX 2: st.error removed from cached function — error returned as string
+def parse_dates_robust(series):
+    """Try multiple strategies — handles ISO, DD/MM/YYYY, MM/DD/YYYY, mixed."""
+    strategies = [
+        dict(format='ISO8601'),
+        dict(format='mixed', dayfirst=True),
+        dict(format='mixed', dayfirst=False),
+        dict(dayfirst=True),
+        dict(),
+    ]
+    for kwargs in strategies:
+        try:
+            result = pd.to_datetime(series, **kwargs)
+            valid = result.notna().sum()
+            if valid > len(series) * 0.8:   # at least 80% parsed successfully
+                return result
+        except Exception:
+            continue
+    return pd.to_datetime(series, errors='coerce')  # final fallback
+
 @st.cache_data
 def load_superstore():
     try:
         df = pd.read_csv('train.csv')
-        df['Order Date'] = pd.to_datetime(df['Order Date'], dayfirst=True, format='mixed')
+        df['Order Date'] = parse_dates_robust(df['Order Date'])
         return df, None
     except Exception as e:
         return None, str(e)
 
 def prep_monthly(df, date_col, val_col):
     df = df.copy()
-    # FIX 4: use dayfirst for upload date parsing
-    df[date_col] = pd.to_datetime(df[date_col], dayfirst=True, format='mixed')
+    df[date_col] = parse_dates_robust(df[date_col])
     df[val_col]  = pd.to_numeric(df[val_col], errors='coerce')
     df = df.dropna(subset=[date_col, val_col])
     monthly = df.groupby(pd.Grouper(key=date_col, freq='MS'))[val_col].sum().reset_index()
@@ -372,36 +390,54 @@ st.divider()
 
 # ── HITL GATE ──────────────────────────────────────────────────
 st.markdown("### 🛡️ Human-in-the-Loop Procurement Gate")
-st.markdown("<p style='color:#6B82A0;font-size:.85rem'>Simulate a procurement order against next month's 80% confidence interval.</p>",
-    unsafe_allow_html=True)
+st.markdown("""
+<div class='info-box' style='margin-bottom:16px;font-size:.85rem;color:#B8C8E0;line-height:1.7'>
+<b style='color:#F0F6FF'>What this does:</b> Your buying team wants to place a procurement order next month.
+Enter the order value below. The system checks it against the forecast's 80% confidence interval
+and recommends whether to <span style='color:#10B981'>auto-approve it</span>,
+<span style='color:#F59E0B'>flag it for manual review</span>, or
+<span style='color:#EF4444'>alert the ops team</span>.<br>
+<span style='color:#6B82A0;font-size:.78rem'>Use the +/- buttons or type any value to simulate different order scenarios.</span>
+</div>""", unsafe_allow_html=True)
 
 nxt_lo  = float(fut['yhat_lower'].iloc[0])
 nxt_hi  = float(fut['yhat_upper'].iloc[0])
 nxt_hat = float(fut['yhat'].iloc[0])
+step    = max(100, int((nxt_hi - nxt_lo) / 40))
 
 gc1, gc2 = st.columns(2)
 with gc1:
+    st.markdown("<p style='color:#B8C8E0;font-size:.85rem;font-weight:600;margin-bottom:4px'>Enter next month's procurement order value:</p>", unsafe_allow_html=True)
     order_val = st.number_input(
-        "Procurement order value ($)", min_value=0,
-        max_value=int(nxt_hi * 2.5), value=int(nxt_hat),
-        step=max(100, int((nxt_hi - nxt_lo) / 40))
+        "Order value ($)",
+        label_visibility="collapsed",
+        min_value=0,
+        max_value=int(nxt_hi * 3),
+        value=int(nxt_hat),
+        step=step,
+        help=f"Use +/- to adjust by ${step:,} per click. The system will instantly update the gate recommendation."
     )
-    st.markdown(f"""<div style='margin-top:10px;font-size:.8rem;color:#6B82A0;line-height:1.9'>
-    <b style='color:#B8C8E0'>Expected range (80% CI)</b><br>
-    Lower bound: <span style='color:#60A5FA'>${nxt_lo:,.0f}</span><br>
-    Point forecast: <span style='color:#818CF8'>${nxt_hat:,.0f}</span><br>
-    Upper bound: <span style='color:#60A5FA'>${nxt_hi:,.0f}</span>
+    st.markdown(f"""
+    <div style='margin-top:14px;background:rgba(255,255,255,.02);border:1px solid #1a2535;
+    border-radius:9px;padding:14px 16px;font-size:.82rem;color:#6B82A0;line-height:2'>
+    <b style='color:#B8C8E0'>Model's expected range for next month</b><br>
+    🔵 Lower bound (80% CI): <b style='color:#60A5FA'>${nxt_lo:,.0f}</b><br>
+    🟣 Point forecast: <b style='color:#818CF8'>${nxt_hat:,.0f}</b><br>
+    🔵 Upper bound (80% CI): <b style='color:#60A5FA'>${nxt_hi:,.0f}</b><br>
+    <span style='font-size:.73rem'>Orders between lower and upper bound are considered normal.</span>
     </div>""", unsafe_allow_html=True)
 
 with gc2:
     gtype, glabel, gmsg = hitl_gate(order_val, nxt_lo, nxt_hi)
     gcolor = {"auto":"#10B981","flag":"#F59E0B","alert":"#EF4444"}[gtype]
-    st.markdown(f"""<div class='gate-{gtype}' style='height:100%'>
-        <div style='font-size:1.1rem;font-weight:700;color:{gcolor};margin-bottom:8px'>{glabel}</div>
-        <div style='font-size:.85rem;color:#B8C8E0'>{gmsg}</div>
-        <div style='font-size:.77rem;color:#6B82A0;margin-top:10px'>
-        Order ${order_val:,.0f} &nbsp;·&nbsp;
-        {"Within" if gtype=="auto" else ("Above" if gtype=="flag" else "Below")} 80% CI
+    pct_vs_forecast = ((order_val - nxt_hat) / nxt_hat * 100) if nxt_hat > 0 else 0
+    st.markdown(f"""<div class='gate-{gtype}' style='height:100%;min-height:160px'>
+        <div style='font-size:1.1rem;font-weight:700;color:{gcolor};margin-bottom:10px'>{glabel}</div>
+        <div style='font-size:.85rem;color:#B8C8E0;margin-bottom:12px'>{gmsg}</div>
+        <div style='font-size:.8rem;color:#6B82A0;border-top:1px solid rgba(255,255,255,.05);padding-top:10px;line-height:1.8'>
+        Your order: <b style='color:#F0F6FF'>${order_val:,.0f}</b><br>
+        vs forecast: <b style='color:{gcolor}'>{pct_vs_forecast:+.1f}%</b><br>
+        Status: {"✅ No action needed" if gtype=="auto" else ("⚠️ Needs human review" if gtype=="flag" else "🚨 Ops team notified")}
         </div>
     </div>""", unsafe_allow_html=True)
 
