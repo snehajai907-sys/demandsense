@@ -3,45 +3,30 @@ import pandas as pd
 import numpy as np
 from prophet import Prophet
 import plotly.graph_objects as go
-import plotly.express as px
 from io import StringIO
 import warnings
 warnings.filterwarnings("ignore")
 
-# ── PAGE CONFIG ────────────────────────────────────────────────
-st.set_page_config(
-    page_title="DemandSense — Revenue Forecasting",
-    page_icon="📈",
-    layout="wide"
-)
+st.set_page_config(page_title="DemandSense — Revenue Forecasting", page_icon="📈", layout="wide")
 
-# ── STYLES ─────────────────────────────────────────────────────
 st.markdown("""
 <style>
-    .main { background-color: #06090F; }
-    .stApp { background-color: #06090F; }
-    section[data-testid="stSidebar"] { background-color: #0B1019; border-right: 1px solid #1a2535; }
-    .metric-box {
-        background: linear-gradient(145deg, #0B1019, #0F1622);
-        border: 1px solid #1a2535;
-        border-radius: 12px;
-        padding: 18px 20px;
-        text-align: center;
-    }
-    .metric-val { font-size: 1.8rem; font-weight: 800; color: #60A5FA; font-family: monospace; }
-    .metric-lbl { font-size: 0.72rem; color: #6B82A0; letter-spacing: 0.1em; text-transform: uppercase; margin-top: 4px; }
-    .gate-auto   { background: rgba(16,185,129,0.08); border: 1px solid rgba(16,185,129,0.2); border-radius: 10px; padding: 14px 18px; }
-    .gate-flag   { background: rgba(245,158,11,0.08); border: 1px solid rgba(245,158,11,0.2); border-radius: 10px; padding: 14px 18px; }
-    .gate-alert  { background: rgba(239,68,68,0.08);  border: 1px solid rgba(239,68,68,0.2);  border-radius: 10px; padding: 14px 18px; }
-    .upload-box  { background: rgba(59,130,246,0.04); border: 1px dashed rgba(59,130,246,0.2); border-radius: 12px; padding: 24px; }
-    .sample-note { background: rgba(59,130,246,0.06); border: 1px solid rgba(59,130,246,0.15); border-radius: 8px; padding: 12px 16px; font-size: 0.82rem; color: #B8C8E0; }
-    h1, h2, h3 { color: #F0F6FF !important; }
-    p, li { color: #B8C8E0; }
-    .stSelectbox label, .stRadio label { color: #B8C8E0 !important; }
+    .main,.stApp{background-color:#06090F}
+    section[data-testid="stSidebar"]{background-color:#0B1019;border-right:1px solid #1a2535}
+    .mbox{background:linear-gradient(145deg,#0B1019,#0F1622);border:1px solid #1a2535;border-radius:12px;padding:18px 20px;text-align:center}
+    .mv{font-size:1.8rem;font-weight:800;color:#60A5FA;font-family:monospace}
+    .ml{font-size:0.7rem;color:#6B82A0;letter-spacing:.1em;text-transform:uppercase;margin-top:4px}
+    .gate-auto{background:rgba(16,185,129,.08);border:1px solid rgba(16,185,129,.2);border-radius:10px;padding:14px 18px}
+    .gate-flag{background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.2);border-radius:10px;padding:14px 18px}
+    .gate-alert{background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.2);border-radius:10px;padding:14px 18px}
+    .info-box{background:rgba(59,130,246,.05);border:1px solid rgba(59,130,246,.15);border-radius:10px;padding:14px 18px}
+    .card{background:rgba(255,255,255,.02);border:1px solid #1a2535;border-radius:10px;padding:14px 16px;margin-bottom:10px}
+    h1,h2,h3{color:#F0F6FF!important}
+    p,li{color:#B8C8E0}
 </style>
 """, unsafe_allow_html=True)
 
-# ── HELPERS ────────────────────────────────────────────────────
+# ── SAMPLE CSV ─────────────────────────────────────────────────
 SAMPLE_CSV = """date,sales
 2021-01-01,14200
 2021-02-01,13800
@@ -80,49 +65,49 @@ SAMPLE_CSV = """date,sales
 2023-11-01,31200
 2023-12-01,37100"""
 
+# ── HELPERS ────────────────────────────────────────────────────
+# FIX 2: st.error removed from cached function — error returned as string
 @st.cache_data
 def load_superstore():
     try:
         df = pd.read_csv('train.csv')
-        df['Order Date'] = pd.to_datetime(df['Order Date'], dayfirst=False)
-        monthly = df.groupby(pd.Grouper(key='Order Date', freq='MS'))['Sales'].sum().reset_index()
-        monthly.columns = ['ds', 'y']
-        monthly = monthly[monthly['y'] > 0].sort_values('ds').reset_index(drop=True)
-        return monthly, df
+        df['Order Date'] = pd.to_datetime(df['Order Date'], dayfirst=True, format='mixed')
+        return df, None
     except Exception as e:
-        st.error(f"Error loading demo data: {e}")
-        return None, None
+        return None, str(e)
+
+def prep_monthly(df, date_col, val_col):
+    df = df.copy()
+    # FIX 4: use dayfirst for upload date parsing
+    df[date_col] = pd.to_datetime(df[date_col], dayfirst=True, format='mixed')
+    df[val_col]  = pd.to_numeric(df[val_col], errors='coerce')
+    df = df.dropna(subset=[date_col, val_col])
+    monthly = df.groupby(pd.Grouper(key=date_col, freq='MS'))[val_col].sum().reset_index()
+    monthly.columns = ['ds', 'y']
+    monthly = monthly[monthly['y'] > 0].sort_values('ds').reset_index(drop=True)
+    return monthly
 
 def detect_columns(df):
     date_cols, num_cols = [], []
     for col in df.columns:
-        is_numeric = pd.api.types.is_numeric_dtype(df[col])
-
-        # Only try date parsing on non-numeric columns
-        if not is_numeric:
+        is_num = pd.api.types.is_numeric_dtype(df[col])
+        if not is_num:
             try:
                 sample = df[col].dropna().head(30).astype(str)
-                parsed = pd.to_datetime(sample, infer_datetime_format=True)
-                # Must have actual variation (not all same value)
+                try:    parsed = pd.to_datetime(sample, format='ISO8601')
+                except: parsed = pd.to_datetime(sample, format='mixed', dayfirst=True)
                 if parsed.nunique() > 1:
                     date_cols.append(col)
-            except:
-                pass
-
-        # Numeric columns — exclude ID-like columns (monotonically increasing ints)
-        if is_numeric:
-            col_data = df[col].dropna()
-            is_id = (
-                col_data.dtype in ['int64','int32'] and
-                col_data.nunique() == len(col_data) and
-                col_data.min() == 1
-            )
-            if not is_id and col_data.nunique() > 3:
+            except: pass
+        if is_num:
+            cd = df[col].dropna()
+            is_id = (cd.dtype in ['int64','int32'] and cd.nunique()==len(cd) and cd.min()==1)
+            if not is_id and cd.nunique() > 3:
                 num_cols.append(col)
-
     return date_cols, num_cols
 
-def run_forecast(monthly_df, label="Revenue"):
+# FIX 1 & 9: horizon parameter now used
+def run_forecast(monthly_df, horizon=6):
     m = Prophet(
         interval_width=0.80,
         seasonality_mode='multiplicative',
@@ -131,357 +116,381 @@ def run_forecast(monthly_df, label="Revenue"):
         daily_seasonality=False
     )
     m.fit(monthly_df)
-    future = m.make_future_dataframe(periods=6, freq='MS')
+    future = m.make_future_dataframe(periods=horizon, freq='MS')
     forecast = m.predict(future)
-    return forecast
+    return forecast, m
 
-def hitl_gate(order_val, lower, upper):
-    if order_val < lower:   return "alert",  "🔴 ALERT",  "Below expected range — investigate before cutting procurement"
-    if order_val <= upper:  return "auto",   "✅ AUTO-APPROVE", "Within expected range — low risk"
-    return "flag", "🟡 FLAG FOR REVIEW", "Above expected range — verify before committing budget"
+def hitl_gate(val, lo, hi):
+    if val < lo:  return "alert", "🔴 ALERT",          "Below expected range — investigate before cutting procurement"
+    if val <= hi: return "auto",  "✅ AUTO-APPROVE",   "Within expected range — safe to approve"
+    return              "flag",   "🟡 FLAG FOR REVIEW", "Above expected range — verify before committing budget"
+
+def mbox(val, lbl):
+    return f"<div class='mbox'><div class='mv'>{val}</div><div class='ml'>{lbl}</div></div>"
+
+def dark_chart():
+    return dict(
+        plot_bgcolor='#0B1019', paper_bgcolor='#0B1019',
+        font=dict(color='#B8C8E0'),
+        xaxis=dict(gridcolor='#1a2535', showgrid=True, zeroline=False),
+        yaxis=dict(gridcolor='#1a2535', showgrid=True, zeroline=False),
+        legend=dict(bgcolor='rgba(0,0,0,0)', bordercolor='#1a2535', borderwidth=1),
+        margin=dict(t=30, b=20, l=10, r=10), height=380, hovermode='x unified'
+    )
 
 # ── SIDEBAR ────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("## 📈 DemandSense")
-    st.markdown("<p style='color:#6B82A0;font-size:0.78rem'>Probabilistic Revenue Forecasting</p>", unsafe_allow_html=True)
+    st.markdown("<p style='color:#6B82A0;font-size:.78rem'>Probabilistic Revenue Forecasting</p>", unsafe_allow_html=True)
     st.divider()
 
-    data_source = st.radio(
-        "**Data Source**",
-        ["🏪 Demo Data (Retail)", "📂 Upload Your CSV"],
-        index=0
-    )
-
+    src = st.radio("**Data Source**",
+        ["🏪 Demo Data (Retail)", "📂 Upload Your CSV"], index=0)
     st.divider()
 
-    if data_source == "🏪 Demo Data (Retail)":
-        st.markdown("**Filter by Category**")
-        category = st.selectbox("Category", ["Technology", "Furniture", "Office Supplies", "All Categories"])
-        st.markdown("**Filter by Region**")
-        region = st.selectbox("Region", ["All Regions", "West", "East", "Central", "South"])
+    # FIX 5: category/region always initialised
+    category = "Technology"
+    region   = "All Regions"
+    horizon  = 6
+
+    if src == "🏪 Demo Data (Retail)":
+        category = st.selectbox("Category", ["Technology","Furniture","Office Supplies","All Categories"])
+        region   = st.selectbox("Region",   ["All Regions","West","East","Central","South"])
     else:
-        st.markdown("**Forecast Settings**")
         horizon = st.slider("Forecast horizon (months)", 3, 12, 6)
 
     st.divider()
     st.markdown("""
-    <div style='font-size:0.72rem;color:#3D5070;line-height:1.7'>
-    <b style='color:#6B82A0'>How the HITL Gate works:</b><br>
+    <div style='font-size:.72rem;color:#3D5070;line-height:1.8'>
+    <b style='color:#6B82A0'>HITL Gate logic:</b><br>
     ✅ Within 80% CI → Auto-approve<br>
-    🟡 Above upper bound → Flag for review<br>
-    🔴 Below lower bound → Alert ops team
-    </div>
-    """, unsafe_allow_html=True)
+    🟡 Above upper → Flag for review<br>
+    🔴 Below lower → Alert ops team
+    </div>""", unsafe_allow_html=True)
 
-# ── MAIN HEADER ────────────────────────────────────────────────
+# ── HEADER ─────────────────────────────────────────────────────
 st.markdown("## 📈 DemandSense")
-st.markdown("<p style='color:#6B82A0'>Probabilistic revenue forecasting with Human-in-the-Loop procurement gates</p>", unsafe_allow_html=True)
+st.markdown("<p style='color:#6B82A0'>Probabilistic revenue forecasting · Human-in-the-Loop procurement gates · 80% CI</p>", unsafe_allow_html=True)
 st.divider()
 
-# ── DATA SOURCE: UPLOAD ────────────────────────────────────────
-if data_source == "📂 Upload Your CSV":
+# ══════════════════════════════════════════════════════════════
+# DATA LOADING
+# ══════════════════════════════════════════════════════════════
+monthly = None
+currency_label = "Sales ($)"
+
+if src == "📂 Upload Your CSV":
     st.markdown("### Upload Your Sales Data")
 
-    col_info, col_dl = st.columns([3, 1])
-    with col_info:
-        st.markdown("""
-        <div class='sample-note'>
-        <b>Expected format:</b> A CSV with one date column (monthly or daily) and one numeric sales/revenue column.
-        Minimum 12 months of data required for a reliable forecast.
-        </div>
-        """, unsafe_allow_html=True)
-    with col_dl:
-        st.download_button(
-            label="⬇ Download Sample CSV",
-            data=SAMPLE_CSV,
-            file_name="sample_sales_data.csv",
-            mime="text/csv",
-            use_container_width=True
-        )
+    c1, c2 = st.columns([3,1])
+    with c1:
+        st.markdown("""<div class='info-box'><b>Expected format:</b> CSV with a date column
+        (daily or monthly) and a numeric sales/revenue column. Minimum 12 months for reliable results.
+        </div>""", unsafe_allow_html=True)
+    with c2:
+        st.download_button("⬇ Sample CSV", SAMPLE_CSV,
+            "sample_sales.csv", "text/csv", use_container_width=True)
 
     st.markdown("")
+    cdemo, _ = st.columns([1,2])
+    with cdemo:
+        if st.button("⚡ Load Demo Data", use_container_width=True):
+            st.session_state['demo_csv'] = True
 
-    # ── ONE-CLICK DEMO BUTTON (same as FinDoc) ──
-    col_demo, col_spacer = st.columns([1, 2])
-    with col_demo:
-        load_demo = st.button(
-            "⚡ Load Demo Data",
-            use_container_width=True,
-            help="Instantly load 3 years of sample retail data — no upload needed"
-        )
+    if 'demo_csv' not in st.session_state:
+        st.session_state['demo_csv'] = False
 
-    if load_demo:
-        st.session_state['use_demo_csv'] = True
-    if 'use_demo_csv' not in st.session_state:
-        st.session_state['use_demo_csv'] = False
+    st.markdown("<p style='color:#6B82A0;font-size:.78rem;margin-top:4px'>— or upload your own below —</p>",
+        unsafe_allow_html=True)
 
-    st.markdown("<p style='color:#6B82A0;font-size:0.78rem;margin-top:4px'>— or upload your own file below —</p>", unsafe_allow_html=True)
+    uploaded = st.file_uploader("Drop CSV here", type=["csv"])
 
-    uploaded_file = st.file_uploader(
-        "Drop your CSV here or click to browse",
-        type=["csv"],
-        help="CSV with a date column and a numeric sales/revenue column"
-    )
-
-    # Determine data source: demo button > uploaded file > empty state
-    if st.session_state['use_demo_csv'] and uploaded_file is None:
+    if st.session_state['demo_csv'] and uploaded is None:
         df_raw = pd.read_csv(StringIO(SAMPLE_CSV))
-        st.success("⚡ Demo data loaded — 3 years of monthly retail sales (36 months). Upload your own CSV above to replace it.")
-    elif uploaded_file is not None:
-        st.session_state['use_demo_csv'] = False
+        st.success("⚡ Demo data loaded — 36 months of sample retail sales")
+    elif uploaded is not None:
+        st.session_state['demo_csv'] = False
         try:
-            df_raw = pd.read_csv(uploaded_file)
-            st.success(f"✅ File loaded — {len(df_raw):,} rows, {len(df_raw.columns)} columns")
+            df_raw = pd.read_csv(uploaded)
+            st.success(f"✅ {len(df_raw):,} rows loaded")
         except Exception as e:
-            st.error(f"Could not read file: {e}")
-            st.stop()
+            st.error(f"Could not read file: {e}"); st.stop()
     else:
-        st.markdown("""
-        <div class='upload-box' style='text-align:center;margin-top:20px'>
-            <div style='font-size:2rem'>📂</div>
-            <div style='color:#B8C8E0;margin-top:10px;font-size:0.95rem'>Click <b>⚡ Load Demo Data</b> for instant preview</div>
-            <div style='color:#6B82A0;font-size:0.8rem;margin-top:6px'>or upload your own CSV to forecast your data</div>
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown("""<div style='background:rgba(59,130,246,.04);border:1px dashed rgba(59,130,246,.2);
+        border-radius:12px;padding:32px;text-align:center;margin-top:16px'>
+        <div style='font-size:2rem'>📂</div>
+        <div style='color:#B8C8E0;margin-top:10px'>Click <b>⚡ Load Demo Data</b> for instant preview</div>
+        <div style='color:#6B82A0;font-size:.8rem;margin-top:6px'>or upload your own CSV</div>
+        </div>""", unsafe_allow_html=True)
         st.stop()
 
-    # Detect columns
     date_cols, num_cols = detect_columns(df_raw)
-
     if not date_cols:
-        st.error("No date column detected. Make sure one column contains dates (e.g. 2023-01-01 or Jan 2023).")
+        st.error("❌ No date column found. Ensure one column has dates like 2023-01-01 or 15/04/2022.")
         st.stop()
     if not num_cols:
-        st.error("No numeric column detected. Make sure one column contains your sales or revenue numbers.")
+        st.error("❌ No numeric column found. Ensure one column has sales or revenue numbers.")
         st.stop()
 
-    # Column mapping
-    col_map1, col_map2 = st.columns(2)
-    with col_map1:
-        date_col = st.selectbox("📅 Date column", date_cols, index=0)
-    with col_map2:
-        num_col  = st.selectbox("💰 Sales / Revenue column", num_cols, index=0)
+    cm1, cm2 = st.columns(2)
+    with cm1: date_col = st.selectbox("📅 Date column", date_cols)
+    with cm2: num_col  = st.selectbox("💰 Sales / Revenue column", num_cols)
 
-    # Build Prophet-ready dataframe
     try:
-        df_raw[date_col] = pd.to_datetime(df_raw[date_col])
-        df_raw[num_col]  = pd.to_numeric(df_raw[num_col], errors='coerce')
-        df_raw = df_raw.dropna(subset=[date_col, num_col])
-
-        # Aggregate to monthly
-        monthly = (
-            df_raw
-            .groupby(pd.Grouper(key=date_col, freq='MS'))[num_col]
-            .sum()
-            .reset_index()
-        )
-        monthly.columns = ['ds', 'y']
-        monthly = monthly[monthly['y'] > 0].sort_values('ds').reset_index(drop=True)
-
-        if len(monthly) < 12:
-            st.warning(f"Only {len(monthly)} months of data found. At least 12 months recommended for a reliable forecast. Proceeding but results may be less accurate.")
-        if len(monthly) < 4:
-            st.error("Not enough data to forecast. Please provide at least 4 months of data.")
-            st.stop()
-
-        currency_label = num_col
-        use_upload = True
-
+        monthly = prep_monthly(df_raw, date_col, num_col)
     except Exception as e:
-        st.error(f"Error processing data: {e}")
-        st.stop()
+        st.error(f"Error processing columns: {e}"); st.stop()
 
-    # Run forecast
-    with st.spinner("Training forecasting model on your data..."):
-        try:
-            forecast = run_forecast(monthly, label=num_col)
-        except Exception as e:
-            st.error(f"Forecasting error: {e}")
-            st.stop()
+    if len(monthly) < 4:
+        st.error("Not enough data — need at least 4 months."); st.stop()
+    if len(monthly) < 12:
+        st.warning(f"Only {len(monthly)} months found. 12+ recommended for accuracy.")
 
-    hist = forecast[forecast['ds'] <= monthly['ds'].max()].copy()
-    fut  = forecast[forecast['ds'] >  monthly['ds'].max()].copy()
-    last_actual = float(monthly['y'].iloc[-1])
-    avg_actual  = float(monthly['y'].mean())
-    proj_total  = float(fut['yhat'].sum())
-    growth_pct  = ((fut['yhat'].mean() - avg_actual) / avg_actual * 100)
+    # IMPROVEMENT A: Data quality card
+    st.markdown(f"""
+    <div class='info-box' style='margin-top:12px;font-size:.82rem;color:#B8C8E0;line-height:1.8'>
+    📊 <b>Data Summary</b> &nbsp;·&nbsp;
+    {len(monthly)} months &nbsp;·&nbsp;
+    {monthly['ds'].min().strftime('%b %Y')} → {monthly['ds'].max().strftime('%b %Y')} &nbsp;·&nbsp;
+    Avg ${monthly['y'].mean():,.0f}/mo &nbsp;·&nbsp;
+    Peak ${monthly['y'].max():,.0f} ({monthly.loc[monthly['y'].idxmax(),'ds'].strftime('%b %Y')})
+    </div>""", unsafe_allow_html=True)
 
-# ── DATA SOURCE: DEMO ──────────────────────────────────────────
+    currency_label = num_col
+
 else:
+    # Demo retail mode
     with st.spinner("Loading retail dataset..."):
-        monthly_full, df_raw = load_superstore()
+        df_raw, err = load_superstore()
 
-    if monthly_full is None:
-        st.error("Could not load demo data. Please check your connection and try again.")
-        st.stop()
+    # FIX 2: error handling outside cached function
+    if df_raw is None:
+        st.error(f"Could not load demo data: {err}"); st.stop()
 
-    # Apply filters
     df_f = df_raw.copy()
-    if 'category' in locals() and category != "All Categories":
+    if category != "All Categories":
         df_f = df_f[df_f['Category'] == category]
-    if 'region' in locals() and region != "All Regions":
+    if region != "All Regions":
         df_f = df_f[df_f['Region'] == region]
 
     monthly = df_f.groupby(pd.Grouper(key='Order Date', freq='MS'))['Sales'].sum().reset_index()
-    monthly.columns = ['ds', 'y']
+    monthly.columns = ['ds','y']
     monthly = monthly[monthly['y'] > 0].sort_values('ds').reset_index(drop=True)
-    currency_label = "Sales ($)"
-    horizon = 6
 
-    with st.spinner("Training Prophet forecasting model..."):
-        forecast = run_forecast(monthly)
+# ══════════════════════════════════════════════════════════════
+# FORECAST
+# ══════════════════════════════════════════════════════════════
+with st.spinner("Training forecasting model..."):
+    try:
+        forecast, model = run_forecast(monthly, horizon=horizon)
+    except Exception as e:
+        st.error(f"Forecast error: {e}"); st.stop()
 
-    hist = forecast[forecast['ds'] <= monthly['ds'].max()].copy()
-    fut  = forecast[forecast['ds'] >  monthly['ds'].max()].copy()
-    last_actual = float(monthly['y'].iloc[-1])
-    avg_actual  = float(monthly['y'].mean())
-    proj_total  = float(fut['yhat'].sum())
-    growth_pct  = ((fut['yhat'].mean() - avg_actual) / avg_actual * 100)
+fut = forecast[forecast['ds'] > monthly['ds'].max()].copy()
+# FIX 3: floor negatives in forecast
+fut['yhat_lower'] = fut['yhat_lower'].clip(lower=0)
+fut['yhat']       = fut['yhat'].clip(lower=0)
 
-# ── KEY METRICS ────────────────────────────────────────────────
-m1, m2, m3, m4 = st.columns(4)
+hist_fc = forecast[forecast['ds'] <= monthly['ds'].max()].copy()
 
-def mbox(val, lbl):
-    return f"<div class='metric-box'><div class='metric-val'>{val}</div><div class='metric-lbl'>{lbl}</div></div>"
+last_val   = float(monthly['y'].iloc[-1])
+avg_val    = float(monthly['y'].mean())
+proj_total = float(fut['yhat'].sum())          # FIX 7: now displayed below
+growth_pct = (fut['yhat'].mean() - avg_val) / avg_val * 100
 
-with m1: st.markdown(mbox(f"${last_actual:,.0f}", "Last Month Actual"), unsafe_allow_html=True)
-with m2: st.markdown(mbox(f"${fut['yhat'].iloc[0]:,.0f}", "Next Month Forecast"), unsafe_allow_html=True)
-with m3: st.markdown(mbox(f"{growth_pct:+.1f}%", "Projected Growth vs Avg"), unsafe_allow_html=True)
-with m4: st.markdown(mbox(f"80%", "Confidence Interval"), unsafe_allow_html=True)
+# IMPROVEMENT B: Model accuracy on historical data (MAPE)
+merged = monthly.merge(hist_fc[['ds','yhat']], on='ds', how='inner')
+mape = float((abs(merged['y'] - merged['yhat']) / merged['y']).mean() * 100)
+accuracy = max(0, 100 - mape)
+
+# ── METRICS ────────────────────────────────────────────────────
+c1,c2,c3,c4,c5 = st.columns(5)
+with c1: st.markdown(mbox(f"${last_val:,.0f}",   "Last Month Actual"),    unsafe_allow_html=True)
+with c2: st.markdown(mbox(f"${fut['yhat'].iloc[0]:,.0f}", "Next Month Forecast"), unsafe_allow_html=True)
+with c3: st.markdown(mbox(f"${proj_total:,.0f}", f"{horizon}M Projected Total"),  unsafe_allow_html=True)
+with c4: st.markdown(mbox(f"{growth_pct:+.1f}%", "vs Historical Avg"),   unsafe_allow_html=True)
+with c5: st.markdown(mbox(f"{accuracy:.1f}%",    "Model Fit Score"),      unsafe_allow_html=True)
 
 st.markdown("")
 
 # ── FORECAST CHART ─────────────────────────────────────────────
+# IMPROVEMENT E: annotate peak and lowest forecast month
+peak_idx = fut['yhat'].idxmax()
+low_idx  = fut['yhat'].idxmin()
+
 fig = go.Figure()
 
-# CI band (forecast)
 fig.add_trace(go.Scatter(
     x=pd.concat([fut['ds'], fut['ds'][::-1]]),
     y=pd.concat([fut['yhat_upper'], fut['yhat_lower'][::-1]]),
-    fill='toself',
-    fillcolor='rgba(59,130,246,0.08)',
-    line=dict(color='rgba(255,255,255,0)'),
-    name='80% Confidence Band',
-    showlegend=True
+    fill='toself', fillcolor='rgba(59,130,246,0.07)',
+    line=dict(color='rgba(0,0,0,0)'),
+    name='80% Confidence Band'
 ))
 
-# Historical line
 fig.add_trace(go.Scatter(
     x=monthly['ds'], y=monthly['y'],
-    mode='lines+markers',
-    name='Actual', line=dict(color='#60A5FA', width=2),
-    marker=dict(size=4)
+    mode='lines+markers', name='Actual',
+    line=dict(color='#60A5FA', width=2), marker=dict(size=4)
 ))
 
-# Forecast line
 fig.add_trace(go.Scatter(
     x=fut['ds'], y=fut['yhat'],
-    mode='lines+markers',
-    name='Forecast', line=dict(color='#818CF8', width=2, dash='dash'),
-    marker=dict(size=6, symbol='circle-open')
+    mode='lines+markers', name='Forecast',
+    line=dict(color='#818CF8', width=2, dash='dash'),
+    marker=dict(size=6, symbol='circle-open'),
+    customdata=np.stack([fut['yhat_lower'], fut['yhat_upper']], axis=-1),
+    hovertemplate='<b>%{x|%b %Y}</b><br>Forecast: $%{y:,.0f}<br>Lower: $%{customdata[0]:,.0f}<br>Upper: $%{customdata[1]:,.0f}<extra></extra>'
 ))
 
-# Upper / lower bounds
-fig.add_trace(go.Scatter(
-    x=fut['ds'], y=fut['yhat_upper'],
-    mode='lines', name='Upper Bound (80%)',
-    line=dict(color='rgba(59,130,246,0.3)', width=1, dash='dot'), showlegend=False
-))
-fig.add_trace(go.Scatter(
-    x=fut['ds'], y=fut['yhat_lower'],
-    mode='lines', name='Lower Bound (80%)',
-    line=dict(color='rgba(59,130,246,0.3)', width=1, dash='dot'), showlegend=False
-))
+# Upper/lower dotted lines
+for col, nm in [('yhat_upper','Upper 80%'),('yhat_lower','Lower 80%')]:
+    fig.add_trace(go.Scatter(
+        x=fut['ds'], y=fut[col], mode='lines', name=nm,
+        line=dict(color='rgba(59,130,246,0.25)', width=1, dash='dot'), showlegend=False
+    ))
 
-# Divider line
+# Peak annotation
+fig.add_annotation(
+    x=fut.loc[peak_idx,'ds'], y=fut.loc[peak_idx,'yhat'],
+    text=f"Peak: ${fut.loc[peak_idx,'yhat']:,.0f}",
+    showarrow=True, arrowhead=2, arrowcolor='#10B981',
+    font=dict(color='#10B981', size=11), bgcolor='rgba(16,185,129,0.1)',
+    bordercolor='rgba(16,185,129,0.3)', borderwidth=1
+)
+
 fig.add_vline(
-    x=monthly['ds'].max().timestamp() * 1000,
-    line_dash="dash", line_color="rgba(255,255,255,0.15)",
-    annotation_text="Forecast →",
-    annotation_font_color="#6B82A0"
+    x=monthly['ds'].max().timestamp()*1000,
+    line_dash='dash', line_color='rgba(255,255,255,0.12)',
+    annotation_text='Forecast →', annotation_font_color='#6B82A0'
 )
 
-fig.update_layout(
-    plot_bgcolor='#0B1019', paper_bgcolor='#0B1019',
-    font=dict(color='#B8C8E0', family='sans-serif'),
-    xaxis=dict(gridcolor='#1a2535', showgrid=True, zeroline=False, title=''),
-    yaxis=dict(gridcolor='#1a2535', showgrid=True, zeroline=False, title=currency_label),
-    legend=dict(bgcolor='rgba(0,0,0,0)', bordercolor='#1a2535', borderwidth=1),
-    margin=dict(t=20, b=20, l=10, r=10),
-    height=400,
-    hovermode='x unified'
-)
-
+fig.update_layout(**dark_chart(), yaxis_title=currency_label)
 st.plotly_chart(fig, use_container_width=True)
 
 st.divider()
 
-# ── HITL PROCUREMENT GATE ──────────────────────────────────────
+# ── HITL GATE ──────────────────────────────────────────────────
 st.markdown("### 🛡️ Human-in-the-Loop Procurement Gate")
-st.markdown("<p style='color:#6B82A0;font-size:0.85rem'>Simulate an incoming procurement order. The system checks it against the 80% confidence interval and recommends an action.</p>", unsafe_allow_html=True)
+st.markdown("<p style='color:#6B82A0;font-size:.85rem'>Simulate a procurement order against next month's 80% confidence interval.</p>",
+    unsafe_allow_html=True)
 
-next_lower = float(max(0, fut['yhat_lower'].iloc[0]))
-next_upper = float(fut['yhat_upper'].iloc[0])
-next_yhat  = float(fut['yhat'].iloc[0])
+nxt_lo  = float(fut['yhat_lower'].iloc[0])
+nxt_hi  = float(fut['yhat_upper'].iloc[0])
+nxt_hat = float(fut['yhat'].iloc[0])
 
-col_slider, col_result = st.columns([1, 1])
-
-with col_slider:
-    order_min = int(next_lower * 0.5)
-    order_max = int(next_upper * 1.5)
-    order_default = int(next_yhat)
-
-    order_value = st.number_input(
-        "Enter procurement order value ($)",
-        min_value=0,
-        max_value=order_max * 2,
-        value=order_default,
-        step=max(100, int((order_max - order_min) / 50)),
-        help="Simulate any order value to see the gate recommendation"
+gc1, gc2 = st.columns(2)
+with gc1:
+    order_val = st.number_input(
+        "Procurement order value ($)", min_value=0,
+        max_value=int(nxt_hi * 2.5), value=int(nxt_hat),
+        step=max(100, int((nxt_hi - nxt_lo) / 40))
     )
+    st.markdown(f"""<div style='margin-top:10px;font-size:.8rem;color:#6B82A0;line-height:1.9'>
+    <b style='color:#B8C8E0'>Expected range (80% CI)</b><br>
+    Lower bound: <span style='color:#60A5FA'>${nxt_lo:,.0f}</span><br>
+    Point forecast: <span style='color:#818CF8'>${nxt_hat:,.0f}</span><br>
+    Upper bound: <span style='color:#60A5FA'>${nxt_hi:,.0f}</span>
+    </div>""", unsafe_allow_html=True)
 
-    st.markdown(f"""
-    <div style='margin-top:12px;font-size:0.8rem;color:#6B82A0;line-height:1.9'>
-    <b style='color:#B8C8E0'>Expected range (80% CI):</b><br>
-    Lower: <span style='color:#60A5FA'>${next_lower:,.0f}</span><br>
-    Forecast: <span style='color:#818CF8'>${next_yhat:,.0f}</span><br>
-    Upper: <span style='color:#60A5FA'>${next_upper:,.0f}</span>
-    </div>
-    """, unsafe_allow_html=True)
-
-with col_result:
-    gate_type, gate_label, gate_msg = hitl_gate(order_value, next_lower, next_upper)
-    css_class = f"gate-{gate_type}"
-    col_icon = {"auto": "#10B981", "flag": "#F59E0B", "alert": "#EF4444"}[gate_type]
-
-    st.markdown(f"""
-    <div class='{css_class}' style='margin-top:8px'>
-        <div style='font-size:1.1rem;font-weight:700;color:{col_icon};margin-bottom:8px'>{gate_label}</div>
-        <div style='font-size:0.85rem;color:#B8C8E0'>{gate_msg}</div>
-        <div style='font-size:0.78rem;color:#6B82A0;margin-top:10px'>
-            Order: <b style='color:#F0F6FF'>${order_value:,.0f}</b> &nbsp;|&nbsp;
-            {"Within" if gate_type == "auto" else ("Above" if gate_type == "flag" else "Below")} 80% CI
+with gc2:
+    gtype, glabel, gmsg = hitl_gate(order_val, nxt_lo, nxt_hi)
+    gcolor = {"auto":"#10B981","flag":"#F59E0B","alert":"#EF4444"}[gtype]
+    st.markdown(f"""<div class='gate-{gtype}' style='height:100%'>
+        <div style='font-size:1.1rem;font-weight:700;color:{gcolor};margin-bottom:8px'>{glabel}</div>
+        <div style='font-size:.85rem;color:#B8C8E0'>{gmsg}</div>
+        <div style='font-size:.77rem;color:#6B82A0;margin-top:10px'>
+        Order ${order_val:,.0f} &nbsp;·&nbsp;
+        {"Within" if gtype=="auto" else ("Above" if gtype=="flag" else "Below")} 80% CI
         </div>
-    </div>
-    """, unsafe_allow_html=True)
+    </div>""", unsafe_allow_html=True)
 
 st.divider()
 
-# ── FORECAST TABLE ─────────────────────────────────────────────
-with st.expander("📋 View Full Forecast Table"):
-    table = fut[['ds', 'yhat', 'yhat_lower', 'yhat_upper']].copy()
-    table.columns = ['Month', 'Forecast', 'Lower (80%)', 'Upper (80%)']
-    table['Month'] = table['Month'].dt.strftime('%b %Y')
-    table['Floor'] = table['Lower (80%)'].apply(lambda x: max(0, x))
-    for c in ['Forecast', 'Lower (80%)', 'Upper (80%)', 'Floor']:
-        table[c] = table[c].apply(lambda x: f"${max(0,x):,.0f}")
-    st.dataframe(table.drop('Floor', axis=1), use_container_width=True, hide_index=True)
+# ── IMPROVEMENT C: SEASONAL DECOMPOSITION ──────────────────────
+with st.expander("📊 Seasonal Trends & Model Components"):
+    comp = forecast[forecast['ds'] <= monthly['ds'].max()].copy()
+
+    sfig = go.Figure()
+    sfig.add_trace(go.Scatter(x=comp['ds'], y=comp['trend'],
+        mode='lines', name='Trend', line=dict(color='#60A5FA', width=2)))
+    sfig.add_trace(go.Scatter(
+        x=comp['ds'],
+        y=comp['trend'] * (1 + comp.get('yearly', pd.Series(0, index=comp.index))),
+        mode='lines', name='Trend + Seasonality',
+        line=dict(color='#818CF8', width=1.5, dash='dot')))
+    sfig.update_layout(**dark_chart(),
+        title=dict(text='Revenue Trend vs Seasonal Pattern', font=dict(color='#B8C8E0', size=13)))
+    st.plotly_chart(sfig, use_container_width=True)
+
+    st.markdown("""<div class='info-box' style='font-size:.82rem;color:#B8C8E0;line-height:1.8'>
+    <b>How to read this:</b> The solid line shows the underlying revenue trend (growth direction).
+    The dotted line adds the seasonal effect — showing how holidays and cycles lift or suppress revenue.
+    When the lines diverge in Q4, that is the holiday season multiplier at work.
+    </div>""", unsafe_allow_html=True)
+
+# ── IMPROVEMENT D: EXPORT FORECAST ─────────────────────────────
+with st.expander("📋 Forecast Table & Export"):
+    tbl = fut[['ds','yhat','yhat_lower','yhat_upper']].copy()
+    tbl.columns = ['Month','Forecast','Lower (80%)','Upper (80%)']
+    tbl['Month'] = tbl['Month'].dt.strftime('%b %Y')
+    tbl['Gate'] = [hitl_gate(r['Forecast'], r['Lower (80%)'], r['Upper (80%)'])[1]
+                   for _, r in tbl.iterrows()]
+    for c in ['Forecast','Lower (80%)','Upper (80%)']:
+        tbl[c] = tbl[c].apply(lambda x: f"${max(0,x):,.0f}")
+
+    st.dataframe(tbl, use_container_width=True, hide_index=True)
+
+    csv_out = fut[['ds','yhat','yhat_lower','yhat_upper']].copy()
+    csv_out.columns = ['month','forecast','lower_80pct','upper_80pct']
+    csv_out['month'] = csv_out['month'].dt.strftime('%Y-%m-%d')
+    for c in ['forecast','lower_80pct','upper_80pct']:
+        csv_out[c] = csv_out[c].clip(lower=0).round(2)
+
+    st.download_button(
+        "⬇ Download Forecast CSV",
+        csv_out.to_csv(index=False),
+        "demandsense_forecast.csv", "text/csv"
+    )
+
+# ── IMPROVEMENT F: MODEL CARD ───────────────────────────────────
+with st.expander("🗂️ Model Card — PM Decisions & Architecture"):
+    st.markdown("""
+    <div style='font-size:.85rem;color:#B8C8E0;line-height:1.9'>
+
+    <b style='color:#F0F6FF;font-size:.95rem'>Why Prophet over ARIMA?</b><br>
+    Prophet handles missing dates and irregular seasonality natively. ARIMA requires stationary
+    data and manual differencing. For a lean build with no dedicated data scientist, Prophet
+    reduces data engineering work by weeks.<br><br>
+
+    <b style='color:#F0F6FF;font-size:.95rem'>Why 80% Confidence Interval — not 95%?</b><br>
+    A 95% CI produces a wider band, which means more orders trigger alerts.
+    If every order is flagged, buyers stop trusting the system and ignore it entirely.
+    80% CI keeps alerts meaningful — only genuinely unusual orders are escalated.
+    <i>Optimising for user adoption over statistical conservatism.</i><br><br>
+
+    <b style='color:#F0F6FF;font-size:.95rem'>Why multiplicative seasonality?</b><br>
+    Retail revenue scales proportionally during peak seasons — a 20% holiday uplift
+    applies to a larger revenue base each year. Multiplicative mode captures this correctly.
+    Additive mode assumes the seasonal bump is a fixed dollar amount, which understates Q4.<br><br>
+
+    <b style='color:#F0F6FF;font-size:.95rem'>Why floor negative lower bounds?</b><br>
+    Revenue cannot be negative. In February, the model's lower bound can drift below zero.
+    Displaying -$774 as a minimum revenue estimate destroys user trust instantly.
+    All lower bounds are clipped at $0 before reaching the UI.<br><br>
+
+    <b style='color:#F0F6FF;font-size:.95rem'>The HITL Gate design</b><br>
+    Three tiers — Auto-approve / Flag / Alert — replaces a binary yes/no with proportionate
+    human attention. Routine orders flow through automatically. Genuinely unusual signals
+    get escalated. Estimated 60-70% reduction in decisions requiring manual review.
+
+    </div>
+    """, unsafe_allow_html=True)
 
 # ── FOOTER ─────────────────────────────────────────────────────
 st.markdown("""
-<div style='text-align:center;margin-top:40px;padding:20px;border-top:1px solid #1a2535'>
-    <span style='font-size:0.72rem;color:#3D5070;letter-spacing:0.08em'>
-    DEMANDSENSE · PROBABILISTIC REVENUE FORECASTING · BUILT BY SNEHA JAISWAL · 2025
-    </span>
-</div>
-""", unsafe_allow_html=True)
+<div style='text-align:center;margin-top:48px;padding:20px;border-top:1px solid #1a2535'>
+<span style='font-size:.7rem;color:#3D5070;letter-spacing:.08em'>
+DEMANDSENSE · PROBABILISTIC REVENUE FORECASTING · BUILT BY SNEHA JAISWAL · 2025
+</span>
+</div>""", unsafe_allow_html=True)
