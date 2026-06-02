@@ -403,19 +403,26 @@ and recommends whether to <span style='color:#10B981'>auto-approve it</span>,
 nxt_lo  = float(fut['yhat_lower'].iloc[0])
 nxt_hi  = float(fut['yhat_upper'].iloc[0])
 nxt_hat = float(fut['yhat'].iloc[0])
-step    = max(100, int((nxt_hi - nxt_lo) / 40))
+step = max(100, int((nxt_hi - nxt_lo) / 40))
+
+# Key that changes only when the underlying forecast changes (new data/filter)
+# This resets the input only when you switch data source, not on every rerun
+forecast_fingerprint = f"{len(monthly)}_{monthly['ds'].max().date()}_{nxt_hat:.0f}"
+if st.session_state.get('_forecast_fp') != forecast_fingerprint:
+    st.session_state['_forecast_fp']  = forecast_fingerprint
+    st.session_state['order_input']   = int(nxt_hat)
 
 gc1, gc2 = st.columns(2)
 with gc1:
-    st.markdown("<p style='color:#B8C8E0;font-size:.85rem;font-weight:600;margin-bottom:4px'>Enter next month's procurement order value:</p>", unsafe_allow_html=True)
+    st.markdown("<p style='color:#B8C8E0;font-size:.85rem;font-weight:600;margin-bottom:4px'>Enter next month\'s procurement order value:</p>", unsafe_allow_html=True)
     order_val = st.number_input(
         "Order value ($)",
         label_visibility="collapsed",
         min_value=0,
         max_value=int(nxt_hi * 3),
-        value=int(nxt_hat),
         step=step,
-        help=f"Use +/- to adjust by ${step:,} per click. The system will instantly update the gate recommendation."
+        key="order_input",
+        help=f"Use +/- to adjust by ${step:,} per click. Gate updates instantly."
     )
     st.markdown(f"""
     <div style='margin-top:14px;background:rgba(255,255,255,.02);border:1px solid #1a2535;
