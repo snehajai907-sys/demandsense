@@ -82,7 +82,7 @@ SAMPLE_CSV = """date,sales
 
 @st.cache_data
 def load_superstore():
-    url = "https://raw.githubusercontent.com/snehajai907-sys/demandsense/main/data/train.csv"
+    url = "https://raw.githubusercontent.com/snehajai907-sys/demandsense/main/train.csv"
     try:
         df = pd.read_csv(url)
         df['Order Date'] = pd.to_datetime(df['Order Date'])
