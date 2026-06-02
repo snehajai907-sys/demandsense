@@ -82,26 +82,44 @@ SAMPLE_CSV = """date,sales
 
 @st.cache_data
 def load_superstore():
-    url = "https://raw.githubusercontent.com/snehajai907-sys/demandsense/main/train.csv"
     try:
-        df = pd.read_csv(url)
-        df['Order Date'] = pd.to_datetime(df['Order Date'])
+        df = pd.read_csv('train.csv')
+        df['Order Date'] = pd.to_datetime(df['Order Date'], dayfirst=False)
         monthly = df.groupby(pd.Grouper(key='Order Date', freq='MS'))['Sales'].sum().reset_index()
         monthly.columns = ['ds', 'y']
-        monthly = monthly[monthly['y'] > 0]
+        monthly = monthly[monthly['y'] > 0].sort_values('ds').reset_index(drop=True)
         return monthly, df
-    except:
+    except Exception as e:
+        st.error(f"Error loading demo data: {e}")
         return None, None
 
 def detect_columns(df):
     date_cols, num_cols = [], []
     for col in df.columns:
-        try:
-            pd.to_datetime(df[col].dropna().head(20))
-            date_cols.append(col)
-        except: pass
-        if pd.api.types.is_numeric_dtype(df[col]):
-            num_cols.append(col)
+        is_numeric = pd.api.types.is_numeric_dtype(df[col])
+
+        # Only try date parsing on non-numeric columns
+        if not is_numeric:
+            try:
+                sample = df[col].dropna().head(30).astype(str)
+                parsed = pd.to_datetime(sample, infer_datetime_format=True)
+                # Must have actual variation (not all same value)
+                if parsed.nunique() > 1:
+                    date_cols.append(col)
+            except:
+                pass
+
+        # Numeric columns — exclude ID-like columns (monotonically increasing ints)
+        if is_numeric:
+            col_data = df[col].dropna()
+            is_id = (
+                col_data.dtype in ['int64','int32'] and
+                col_data.nunique() == len(col_data) and
+                col_data.min() == 1
+            )
+            if not is_id and col_data.nunique() > 3:
+                num_cols.append(col)
+
     return date_cols, num_cols
 
 def run_forecast(monthly_df, label="Revenue"):
